@@ -1,3 +1,18 @@
+const byte LED_PIN = 13;
+const byte BUZZER_PIN = 6;
+const byte ROTARY_SW_PIN = 5;
+const byte ROTARY_CLK_PIN = 3;
+const byte ROTARY_DT_PIN = 4;
+volatile bool ledOn = false;
+volatile bool dataChangedFlag = false;
+volatile uint16_t ocrval = 0;
+
+#define LED_FREQUENCY_DEFAULT 5000
+#define LED_OCR_VAL_DEFAULT 100
+
+/********************************************
+DRIVER CODE FOR SETMODE
+*********************************************/
 #define CLEAR_BIT(x,n) x &= ~(1 << n)
 #define MCUCR_PUDBIT_OFFSET 4 // from https://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-7810-Automotive-Microcontrollers-ATmega328P_Datasheet.pdf
 
@@ -54,58 +69,91 @@ void setPinMode(uint8_t pin, GPIO_MODE_t mode) {
   }
 }
 
-/* Pin definitions */
-const byte LED_PIN = 13;
-const byte BUZZER_PIN = 6;
-const byte ROTARY_SW_PIN = 2;
-const byte ROTARY_CLK_PIN = 3;
-const byte ROTARY_DT_PIN = 4;
-
-#define SERIAL_BAUD_RATE 57600 // characters per second
-volatile int counter = 0;
-volatile bool dataChangedFlag = false;
-
-void setup() {
-  Serial.begin(SERIAL_BAUD_RATE);
-  setPinMode(BUZZER_PIN, GPIO_MODE_OUTPUT);
-  setPinMode(LED_PIN, GPIO_MODE_OUTPUT);
-  setPinMode(ROTARY_SW_PIN, GPIO_MODE_INPUT_PULLUP);
-  setPinMode(ROTARY_DT_PIN, GPIO_MODE_INPUT);
-  attachInterrupt(digitalPinToInterrupt(ROTARY_SW_PIN), handleButton, FALLING);
-  attachInterrupt(digitalPinToInterrupt(ROTARY_CLK_PIN), handleRotation, RISING);
-}
-
-void loop() {
-  while (!dataChangedFlag) {};
-  Serial.print("Counter: ");
-  Serial.println(counter);
-  dataChangedFlag = false;
-}
-
 void handleButton() {
   if (dataChangedFlag) return;
-  counter = 0;
+  ocrval = LED_OCR_VAL_DEFAULT;
   dataChangedFlag = true;
 }
 
 void handleRotation() {
   if (dataChangedFlag) return;
   if (digitalRead(ROTARY_DT_PIN) == HIGH) {
-    counter--;
+    if (ocrval-10 > 0) {
+      ocrval -= 10;
+    }
   } else {
-    counter++;
+    ocrval += 10;
   }
   dataChangedFlag = true;
 }
 
-/**
-* @brief Approximation of delay() function that leverages the Serial terminal to generate blocking delay.
-* @param ms Number of milliseconds of the delay.
-*/
-void delayPrintln(unsigned long ms) {
-  /* It takes about 50 div BAUD_RATE seconds to send out one character */
-  unsigned long numCharacters = round(SERIAL_BAUD_RATE * ms/(50000)); 
-  for (int i = 0; i < numCharacters; i++) {
-    Serial.println(i);
-  }
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(57600);
+  setPinMode(BUZZER_PIN, GPIO_MODE_OUTPUT);
+  setPinMode(LED_PIN, GPIO_MODE_OUTPUT);
+  setPinMode(ROTARY_SW_PIN, GPIO_MODE_INPUT_PULLUP);
+  setPinMode(ROTARY_DT_PIN, GPIO_MODE_INPUT);
+  attachInterrupt(digitalPinToInterrupt(ROTARY_SW_PIN), handleButton, FALLING);
+  attachInterrupt(digitalPinToInterrupt(ROTARY_CLK_PIN), handleRotation, RISING);
+  initTimer1();
+  Serial.println(LED_OCR_VAL_DEFAULT);
 }
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  while (!dataChangedFlag) {};
+  //Serial.print("OCRval: ");
+  //Serial.println(ocrval);
+  Serial.print("Duty Cycle (%): ");
+  Serial.println(((float)LED_OCR_VAL_DEFAULT/((float)(LED_OCR_VAL_DEFAULT+ocrval))));
+  dataChangedFlag = false;
+}
+
+void changeOCR1(uint16_t OCR1val) {
+  // turn off interrupts
+  //cli();
+  /* change value of OCR1A */
+  OCR1A = OCR1val;
+  // sei();
+}
+
+/* initialize the timer (timer 1) at default frequency */
+void initTimer1() {
+  cli(); //stop all interrupts
+  // turn on CTC mode
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCCR1B |= (1 << WGM12);
+
+  // Set CS12 bit for prescaler 256
+  TCCR1B |= (1 << CS12); 
+  
+  //initialize counter value to 0;
+  TCNT1  = 0;
+  
+  // set timer count for given default frequency
+  OCR1A = LED_OCR_VAL_DEFAULT; // = (16*10^6) / (5000*256) = 12
+
+  // enable timer compare interrupt
+  TIMSK1 |= (1 << OCIE1A);
+
+  sei();//allow interrupts
+}
+
+/* Timer ISR */
+ISR(TIMER1_COMPA_vect) {
+ //write your timer code here
+ if (ledOn) {
+  digitalWrite(LED_PIN, HIGH);
+  changeOCR1(LED_OCR_VAL_DEFAULT);
+ } else {
+  digitalWrite(LED_PIN, LOW);
+  changeOCR1(ocrval);
+ }
+ ledOn = !ledOn;
+}
+
+
+
+
